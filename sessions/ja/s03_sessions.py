@@ -685,6 +685,7 @@ def handle_repl_command(
             print_warn("  Usage: /switch <session_id_or_label>")
             return True, messages
         target = arg.strip()
+        # 解決順序: 先に label/id 完全一致、次に前方一致。
         exact_matches = [
             {"sid": sid, "label": meta.get("label", "")}
             for sid, meta in store._index.items()

@@ -671,6 +671,7 @@ def handle_repl_command(
             print_warn("  Usage: /switch <session_id_or_label>")
             return True, messages
         target = arg.strip()
+        # Resolution order: exact label/id, then prefix match.
         exact_matches = [
             {"sid": sid, "label": meta.get("label", "")}
             for sid, meta in store._index.items()

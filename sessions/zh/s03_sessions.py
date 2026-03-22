@@ -686,6 +686,7 @@ def handle_repl_command(
             return True, messages
         target = arg.strip()
 
+        # 解析顺序：先精确匹配 label/id，再匹配前缀。
         exact_matches = [
             {"sid": sid, "label": meta.get("label", "")}
             for sid, meta in store._index.items()
