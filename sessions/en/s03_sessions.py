@@ -668,19 +668,37 @@ def handle_repl_command(
 
     elif cmd == "/switch":
         if not arg:
-            print_warn("  Usage: /switch <session_id>")
+            print_warn("  Usage: /switch <session_id_or_label>")
             return True, messages
-        target_id = arg.strip()
-        matched = [sid for sid in store._index if sid.startswith(target_id)]
+        target = arg.strip()
+        # Resolution order: exact label/id, then prefix match.
+        exact_matches = [
+            {"sid": sid, "label": meta.get("label", "")}
+            for sid, meta in store._index.items()
+            if meta.get("label", "") == target or sid == target
+        ]
+        matched = exact_matches if exact_matches else [
+            {"sid": sid, "label": meta.get("label", "")}
+            for sid, meta in store._index.items()
+            if (
+                meta.get("label", "").startswith(target)
+                or sid.startswith(target)
+            )
+        ]
         if len(matched) == 0:
-            print_warn(f"  Session not found: {target_id}")
+            print_warn(f"  Session not found: {target}")
             return True, messages
         if len(matched) > 1:
-            print_warn(f"  Ambiguous prefix, matches: {', '.join(matched)}")
+            matches_text = [
+                f"{item['label']} ({item['sid']})" if item["label"] else item["sid"]
+                for item in matched
+            ]
+            print_warn(f"  Ambiguous prefix, matches: {', '.join(matches_text)}")
             return True, messages
-        sid = matched[0]
+        sid = matched[0]["sid"]
+        label = matched[0]["label"]
         new_messages = store.load_session(sid)
-        print_session(f"  Switched to session: {sid} ({len(new_messages)} messages)")
+        print_session(f"  Switched to session: {label} {sid} ({len(new_messages)} messages)")
         return True, new_messages
 
     elif cmd == "/context":
@@ -708,7 +726,7 @@ def handle_repl_command(
         print_info("  Commands:")
         print_info("    /new [label]       Create a new session")
         print_info("    /list              List all sessions")
-        print_info("    /switch <id>       Switch to a session (prefix match)")
+        print_info("    /switch <id|label> Switch by label or id prefix")
         print_info("    /context           Show context token usage")
         print_info("    /compact           Manually compact conversation history")
         print_info("    /help              Show this help")
