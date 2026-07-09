@@ -177,11 +177,204 @@ async with sem:
 
 ### 5.3 `asyncio.Event`：通知
 
-```python
-event = asyncio.Event()
-# 协程A: await event.wait()      # 阻塞等，直到别人 set()
-# 协程B: event.set()              # 唤醒所有 wait 的
+`Event` 是一个**「带记忆的开关」**——内部就一个布尔值。它的作用是让一组协程**等同一个信号**：「直到某件事发生，我才继续」。
+
+#### 5.3.1 心智模型：一个带记忆的开关
+
 ```
+Event 内部状态: 一个 bool（初始 False）
+
+set()     →  把内部 bool 置 True，并唤醒所有正在 wait() 的协程
+clear()   →  把内部 bool 置回 False
+is_set()  →  读当前状态（不等待）
+await wait() →
+    如果已经是 True → 立即返回（不阻塞）
+    如果是 False   → 挂起，直到下次 set() 才被唤醒
+```
+
+关键在**「带记忆」**三个字：`set()` 之后状态会**保持 True**，之后任何新的 `wait()` 都会**立即返回**（不会错过信号），直到你主动 `clear()` 把它复位。这和「一次性信号」不同——Event 是「电平」信号（持续亮着），不是「脉冲」信号（闪一下就灭）。
+
+这个「粘性」语义是理解 Event 的核心：
+
+```
+时间轴 ──────────────────────────────────►
+状态:   False ──── set() ──► True ────────────── clear() ──► False
+wait():  挂起...            立即返回                立即返回     挂起...
+                          (之前的协程被唤醒)      (仍在 True 期间)
+```
+
+#### 5.3.2 三个方法速记
+
+| 方法 | 作用 | 关键点 |
+|------|------|--------|
+| `await event.wait()` | 等待信号 | 已 set 时立即返回；未 set 时挂起。**别忘了 `await`** |
+| `event.set()` | 发信号 | 置 True + 唤醒**所有**当前挂起的 waiter（广播） |
+| `event.clear()` | 复位 | 置回 False，让后续 wait 重新挂起 |
+| `event.is_set()` | 查状态 | 非阻塞，只读，不等 |
+
+#### 5.3.3 示例 1：最基本——一个等，一个发
+
+```python
+import asyncio
+
+async def waiter(event):
+    print("等信号...")
+    await event.wait()        # 未 set → 挂起
+    print("收到信号，继续干活")
+
+async def setter(event):
+    await asyncio.sleep(1)    # 干点别的，故意延迟
+    print("发信号!")
+    event.set()              # 唤醒 waiter
+
+async def main():
+    ev = asyncio.Event()
+    await asyncio.gather(
+        waiter(ev),
+        setter(ev),
+    )
+
+asyncio.run(main())
+```
+
+输出：
+
+```
+等信号...
+发信号!              ← 1秒后
+收到信号，继续干活    ← set() 立即唤醒 waiter
+```
+
+`waiter` 在 `await event.wait()` 处**挂起让出**，事件循环跑去执行 `setter`；`setter` 调 `set()` 后，`waiter` 被唤醒，从 `wait()` 返回继续往下跑。
+
+#### 5.3.4 示例 2：「粘性」——set 后的新 waiter 不会错过信号
+
+```python
+async def main():
+    ev = asyncio.Event()
+    ev.set()                       # 先发信号（此时没人等）
+
+    # 现在才来一个 waiter：
+    await ev.wait()                # 立即返回！因为已经是 set 状态
+    print("我没等就过了")          # 会打印
+```
+
+如果 Event 是「脉冲」式（信号闪一下就忘），后来的 waiter 会永远挂起。但 Event 是「电平」式——`set()` 之后状态保持 True，所以**后来的 waiter 也能立刻通过**。这就是「带记忆」的好处：**不怕错过。**
+
+要让它重新能「等」，必须 `clear()`：
+
+```python
+ev.clear()
+await ev.wait()    # 又挂起了，因为现在是 False
+```
+
+#### 5.3.5 示例 3：广播——一个 set 唤醒多个 waiter
+
+```python
+async def worker(i, event):
+    await event.wait()
+    print(f"worker {i} 启动!")
+
+async def main():
+    ev = asyncio.Event()
+    # 5 个 worker 都在等同一个「开始」信号
+    await asyncio.gather(*[worker(i, ev) for i in range(5)])
+    # 注意：上面会全部挂在 wait()，永远不返回——需要下面这个
+```
+
+⚠️ 上面这段会**死锁**——5 个 worker 全挂在 `wait()`，没人 `set()`，`gather` 永远等不到。正确的写法要加一个发信号的协程：
+
+```python
+async def starter(event):
+    await asyncio.sleep(1)
+    print("start!")
+    event.set()        # 一次 set，5 个 worker 全部被唤醒
+
+async def main():
+    ev = asyncio.Event()
+    await asyncio.gather(
+        *[worker(i, ev) for i in range(5)],
+        starter(ev),
+    )
+```
+
+输出：
+
+```
+start!
+worker 0 启动!
+worker 1 启动!
+worker 2 启动!
+worker 3 启动!
+worker 4 启动!
+```
+
+**一次 `set()` 同时唤醒所有挂起的 waiter**——这是 Event 的「广播」特性。常见用途就是这种「发令枪」：一堆协程齐刷刷等一个 go 信号，信号一来同时开工。
+
+#### 5.3.6 示例 4：优雅停机——循环里反复等停机信号
+
+这是网关/服务里最实用的模式：一个常驻协程一边干活一边盯「该停了吗」的信号。
+
+```python
+async def poller(event):
+    while not event.is_set():          # 没让停就继续
+        print("拉取中...")
+        await asyncio.sleep(0.5)        # 模拟干活（必须有 await，否则 is_set 永远读不到新值）
+    print("收到停机，退出")
+
+async def main():
+    ev = asyncio.Event()
+    task = asyncio.create_task(poller(ev))
+    await asyncio.sleep(2)              # 让它跑 2 秒
+    ev.set()                           # 发停机信号
+    await task                         # 等它干净退出
+    print("已停止")
+```
+
+输出：
+
+```
+拉取中...
+拉取中...
+拉取中...
+拉取中...
+收到停机，退出
+已停止
+```
+
+这正是 s04 的 `telegram_poll_loop` 用 `threading.Event` 做的事（`while not stop.is_set(): ...` + 退出时 `stop_event.set()`），换成 asyncio 版就是把 `stop.is_set()` 换成 `event.is_set()`、把 `stop.wait(5.0)` 换成 `await asyncio.sleep(5)`。语义完全一样，只是 `Event` 能 `await`。
+
+> 进阶：循环里也可以用 `await asyncio.wait_for(event.wait(), timeout=0.5)` 同时实现「等信号」和「周期干活」——信号来了立刻退出，否则每 0.5 秒干一轮。比 `while not is_set(): sleep()` 更灵敏（后者最多要等一个 sleep 周期才看到 set）。
+
+#### 5.3.7 和 `threading.Event` 的对照
+
+| | `threading.Event` | `asyncio.Event` |
+|---|---|---|
+| 等待方式 | `event.wait()`（阻塞线程） | `await event.wait()`（挂起协程，不阻塞线程） |
+| 在哪里用 | 多线程程序 | asyncio 协程里 |
+| 能不能跨用 | ❌（threading 的不能 `await`） | ❌（asyncio 的不能跨线程 wait，要绑事件循环） |
+| 语义 | 完全一样：带记忆的开关 | 完全一样 |
+
+口诀：**同步世界用 `threading.Event`，异步世界用 `asyncio.Event`，别串台。** s04 多线程 → `threading.Event`；s05 asyncio → `asyncio.Event`。
+
+#### 5.3.8 别混淆：Event vs Condition vs Future
+
+| 原语 | 语义 | 何时用 |
+|------|------|--------|
+| **Event** | 带记忆开关，广播给所有 waiter | 「某条件达成了，通知所有等待者」——一次性触发、广播 |
+| **Condition** | 配 `Lock` 用的条件变量，唤醒后要重新抢锁、可 `notify(n)` 只唤醒 n 个 | 等待 + 修改共享状态（生产者-消费者里配合锁用） |
+| **Future** | 一次性结果容器，set 后不可改 | 等「一个异步结果」（如 `loop.run_in_executor` 返回的） |
+
+简单记：**Event 是「通知所有人某事发生了」，Condition 是「配合锁精细控制共享状态」，Future 是「等一个结果」。** 大多数「发个信号让大家停/启动」的场景，用 Event 就够，别上 Condition。
+
+#### 5.3.9 两个常见坑
+
+1. **漏 `await`**：`event.wait()` 是协程，不 `await` 它只是造了个协程对象，啥也没等。
+   ```python
+   event.wait()          # ❌ 没等，直接过
+   await event.wait()    # ✅
+   ```
+2. **在模块顶层创建**：`ev = asyncio.Event()` 顶层写会绑到「不存在的循环」，要延后到协程里建（和 `Semaphore` 同理，见陷阱 3）。
 
 「等一个信号」。s04 里用 `threading.Event` 通知轮询线程退出，asyncio 版语义一样，只是异步可 `await`。
 
