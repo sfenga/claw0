@@ -104,12 +104,9 @@ def agent_loop() -> None:
 ## 试一试
 
 ```sh
-# 确保 .env 中有你的密钥
-echo 'ANTHROPIC_API_KEY=sk-ant-xxxxx' > .env
-echo 'MODEL_ID=claude-sonnet-4-20250514' >> .env
-
-# 运行 agent
-python zh/s01_agent_loop.py
+# 首次运行前配置 .env (只需一次): 参考 .env.example 填入 ANTHROPIC_API_KEY 和 MODEL_ID
+# 已配置则直接运行 (在项目根目录 claw0/ 下):
+.venv/bin/python sessions/zh/s01_agent_loop.py
 
 # 和它对话 -- 多轮对话有效, 因为 messages[] 会累积
 # You > 法国的首都是哪里?

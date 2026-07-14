@@ -157,7 +157,7 @@ def compact_history(self, messages, api_client, model):
 ## 试一试
 
 ```sh
-python zh/s03_sessions.py
+.venv/bin/python sessions/zh/s03_sessions.py
 
 # 创建会话并在会话之间切换
 # You > /new my-project

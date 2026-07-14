@@ -162,7 +162,7 @@ system_prompt = build_system_prompt(
 ## 试一试
 
 ```sh
-python zh/s06_intelligence.py
+.venv/bin/python sessions/zh/s06_intelligence.py
 
 # 创建工作区文件以体验完整系统:
 # workspace/SOUL.md       -- "You are warm, curious, and encouraging."

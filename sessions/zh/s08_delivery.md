@@ -144,7 +144,7 @@ class DeliveryRunner:
 ## 试一试
 
 ```sh
-python zh/s08_delivery.py
+.venv/bin/python sessions/zh/s08_delivery.py
 
 # 发送一条消息 -- 观察它被入队并投递
 # You > Hello!

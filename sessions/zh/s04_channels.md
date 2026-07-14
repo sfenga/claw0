@@ -137,7 +137,7 @@ def run_agent_turn(inbound: InboundMessage, conversations: dict, mgr: ChannelMan
 
 ```sh
 # 仅 CLI (除了 API key 外不需要其他环境变量)
-python zh/s04_channels.py
+.venv/bin/python sessions/zh/s04_channels.py
 
 # 启用 Telegram -- 在 .env 中添加:
 # TELEGRAM_BOT_TOKEN=123456:ABC-DEF...

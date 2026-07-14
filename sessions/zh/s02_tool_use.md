@@ -122,7 +122,7 @@ while True:
 ## 试一试
 
 ```sh
-python zh/s02_tool_use.py
+.venv/bin/python sessions/zh/s02_tool_use.py
 
 # 让它执行命令
 # You > 当前目录下有哪些文件?

@@ -192,7 +192,7 @@ def _run_attempt(self, api_client, model, system, messages, tools):
 ## 试一试
 
 ```sh
-python zh/s09_resilience.py
+.venv/bin/python sessions/zh/s09_resilience.py
 
 # 正常对话 -- 观察单配置成功
 # You > Hello!

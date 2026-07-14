@@ -143,7 +143,7 @@ def heartbeat_tick(self):
 ## 试一试
 
 ```sh
-python zh/s10_concurrency.py
+.venv/bin/python sessions/zh/s10_concurrency.py
 
 # 显示所有 lane 及其当前状态
 # You > /lanes

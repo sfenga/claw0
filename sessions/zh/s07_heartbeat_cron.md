@@ -149,7 +149,7 @@ else:
 ## 试一试
 
 ```sh
-python zh/s07_heartbeat_cron.py
+.venv/bin/python sessions/zh/s07_heartbeat_cron.py
 
 # 创建 workspace/HEARTBEAT.md 写入指令:
 # "Check if there are any unread reminders. Reply HEARTBEAT_OK if nothing to report."

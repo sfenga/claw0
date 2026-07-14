@@ -140,7 +140,7 @@ class AgentConfig:
 ## 试一试
 
 ```sh
-python zh/s05_gateway_routing.py
+.venv/bin/python sessions/zh/s05_gateway_routing.py
 
 # 测试路由
 # You > /bindings                      (查看所有路由绑定)
