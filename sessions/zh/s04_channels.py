@@ -131,7 +131,7 @@ class CLIChannel(Channel):
 
     def receive(self) -> InboundMessage | None:
         try:
-            text = input(f"{CYAN}{BOLD}You > {RESET}").strip()
+            text = input(f"\001{CYAN}\002\001{BOLD}\002You > \001{RESET}\002").strip()
         except (KeyboardInterrupt, EOFError):
             return None
         if not text:

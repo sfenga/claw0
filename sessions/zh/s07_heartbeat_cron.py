@@ -55,7 +55,9 @@ CYAN, GREEN, YELLOW, DIM, RESET, BOLD = "\033[36m", "\033[32m", "\033[33m", "\03
 MAGENTA, RED, BLUE, ORANGE = "\033[35m", "\033[31m", "\033[34m", "\033[38;5;208m"
 
 def colored_prompt() -> str:
-    return f"{CYAN}{BOLD}You > {RESET}"
+    # \001 / \002 标记其间为非打印字符, 让 readline/libedit 不计入提示符宽度.
+    # 否则带颜色的 prompt 会让退格删不掉已显示字符 (光标列宽被 ANSI 码算错).
+    return f"\001{CYAN}\002\001{BOLD}\002You > \001{RESET}\002"
 
 def print_assistant(text: str) -> None:
     print(f"\n{GREEN}{BOLD}Assistant:{RESET} {text}\n")

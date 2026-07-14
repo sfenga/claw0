@@ -548,7 +548,7 @@ def repl() -> None:
 
     while True:
         try:
-            user_input = input(f"{CYAN}{BOLD}You > {RESET}").strip()
+            user_input = input(f"\001{CYAN}\002\001{BOLD}\002You > \001{RESET}\002").strip()
         except (KeyboardInterrupt, EOFError):
             print(f"\n{DIM}Goodbye.{RESET}"); break
         if not user_input:
