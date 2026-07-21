@@ -36,7 +36,7 @@ Section 06: Intelligence (智能)
     python zh/s06_intelligence.py
 
 REPL 命令:
-    /soul /skills /memory /search <q> /prompt /bootstrap
+    /soul /skills /memory /search <q> /forget <date=...|category=...> /prompt /bootstrap
 """
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ import math
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -293,19 +293,58 @@ class MemoryStore:
         self.workspace_dir = workspace_dir
         self.memory_dir = workspace_dir / "memory" / "daily"
         self.memory_dir.mkdir(parents=True, exist_ok=True)
+        # 硬遗忘配置: 留存期 (天数), 早于此的 daily 文件被整体移除 (文件级).
+        self.retention_days = int(os.getenv("MEMORY_RETENTION_DAYS", "30"))
+        # 遗忘计数器: 进程内累积, 用于 get_stats 可观测.
+        self.auto_expired = 0          # 自动过期移除的条目数 (TTL 懒跳过 + 留存期整文件)
+        self.explicit_forgotten = 0   # memory_forget 显式移除的条目数
 
-    def write_memory(self, content: str, category: str = "general") -> str:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    def _retention_cutoff(self) -> datetime:
+        """最早保留的日期 (含). 文件名日期早于此的 daily 文件被移除."""
+        return datetime.now(timezone.utc) - timedelta(days=self.retention_days)
+
+    def _purge_over_retention(self) -> int:
+        """移除文件名日期早于留存期起点的整个 daily 文件 (文件级, 原子 unlink).
+        永不触及 MEMORY.md. 返回被移除的条目数并累加到 auto_expired."""
+        if not self.memory_dir.is_dir():
+            return 0
+        cutoff = self._retention_cutoff()
+        removed = 0
+        for jf in list(self.memory_dir.glob("*.jsonl")):
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", jf.name)
+            if not m:
+                continue
+            try:
+                file_date = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if file_date < cutoff:
+                try:
+                    with open(jf, encoding="utf-8") as f:
+                        removed += sum(1 for line in f if line.strip())
+                    jf.unlink()
+                except Exception:
+                    continue
+        self.auto_expired += removed
+        return removed
+
+    def write_memory(self, content: str, category: str = "general", ttl_hours: float | None = None) -> str:
+        now = datetime.now(timezone.utc)
+        today = now.strftime("%Y-%m-%d")
         path = self.memory_dir / f"{today}.jsonl"
-        entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+        entry: dict[str, Any] = {
+            "ts": now.isoformat(),
             "category": category,
             "content": content,
         }
+        # 可选 TTL: 写入带 expires_at 的临时记忆 (如一次性提醒), 到期后懒跳过.
+        if ttl_hours is not None:
+            entry["expires_at"] = (now + timedelta(hours=ttl_hours)).isoformat()
         try:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-            return f"Memory saved to {today}.jsonl ({category})"
+            ttl_note = f", expires_at={entry['expires_at']}" if ttl_hours is not None else ""
+            return f"Memory saved to {today}.jsonl ({category}{ttl_note})"
         except Exception as exc:
             return f"Error writing memory: {exc}"
 
@@ -321,15 +360,18 @@ class MemoryStore:
     def _load_all_chunks(self) -> list[dict[str, str]]:
         """加载所有记忆并拆分为块 (path + text)."""
         chunks: list[dict[str, str]] = []
-        # 按段落拆分长期记忆
+        # evergreen 层: 永不被自动过期触及 (边界)
         evergreen = self.load_evergreen()
         if evergreen:
             for para in evergreen.split("\n\n"):
                 para = para.strip()
                 if para:
                     chunks.append({"path": "MEMORY.md", "text": para})
-        # 每日记忆: 每条 JSONL 记录作为一个块
+        # 自动过期 (文件级): 先移除超留存期的整文件, 再加载剩余.
+        self._purge_over_retention()
+        # 每日记忆: 每条 JSONL 记录作为一个块; 单条 expires_at 已过则懒跳过 (条目级).
         if self.memory_dir.is_dir():
+            now = datetime.now(timezone.utc)
             for jf in sorted(self.memory_dir.glob("*.jsonl")):
                 try:
                     for line in jf.read_text(encoding="utf-8").splitlines():
@@ -337,6 +379,14 @@ class MemoryStore:
                         if not line:
                             continue
                         entry = json.loads(line)
+                        exp = entry.get("expires_at")
+                        if exp:
+                            try:
+                                if datetime.fromisoformat(exp) < now:
+                                    self.auto_expired += 1
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
                         text = entry.get("content", "")
                         if text:
                             cat = entry.get("category", "")
@@ -573,8 +623,71 @@ class MemoryStore:
             result.append({"path": r["chunk"]["path"], "score": round(r["score"], 4), "snippet": snippet})
         return result
 
+    def forget(self, category: str | None = None, date: str | None = None) -> int:
+        """显式遗忘 (硬遗忘). 永不触及 MEMORY.md. 返回被移除的条目数.
+
+        - date 给定: 移除整个 memory/daily/{date}.jsonl (文件级).
+        - category 给定: 遍历所有 daily 文件, 移除匹配条目, 原子重写剩余 (条目级).
+        - 二者皆无: 返回 0 (无操作).
+        """
+        if date is None and category is None:
+            return 0
+        removed = 0
+        # 按日期: 整文件移除 (与自动过期同粒度).
+        if date is not None:
+            target = self.memory_dir / f"{date}.jsonl"
+            if target.is_file():
+                try:
+                    with open(target, encoding="utf-8") as f:
+                        removed += sum(1 for line in f if line.strip())
+                    target.unlink()
+                except Exception:
+                    pass
+            self.explicit_forgotten += removed
+            return removed
+        # 按 category: 跨文件移除匹配条目, 临时文件 + rename 原子重写 (与 s08 预写一致).
+        if not self.memory_dir.is_dir():
+            return 0
+        for jf in sorted(self.memory_dir.glob("*.jsonl")):
+            try:
+                lines = jf.read_text(encoding="utf-8").splitlines()
+            except Exception:
+                continue
+            kept: list[str] = []
+            file_removed = 0
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    kept.append(line)
+                    continue
+                if entry.get("category") == category:
+                    file_removed += 1
+                else:
+                    kept.append(json.dumps(entry, ensure_ascii=False))
+            if file_removed:
+                tmp = jf.with_name(jf.name + ".tmp")
+                try:
+                    with open(tmp, "w", encoding="utf-8") as f:
+                        for k in kept:
+                            f.write(k + "\n")
+                    tmp.replace(jf)
+                    removed += file_removed
+                except Exception:
+                    try:
+                        tmp.unlink()
+                    except Exception:
+                        pass
+        self.explicit_forgotten += removed
+        return removed
+
     def get_stats(self) -> dict[str, Any]:
         evergreen = self.load_evergreen()
+        # 懒清理: stats 也反映留存期内的余量 (移除已超期的整文件).
+        self._purge_over_retention()
         daily_files = list(self.memory_dir.glob("*.jsonl")) if self.memory_dir.is_dir() else []
         total_entries = 0
         for f in daily_files:
@@ -582,7 +695,14 @@ class MemoryStore:
                 total_entries += sum(1 for line in f.read_text(encoding="utf-8").splitlines() if line.strip())
             except Exception:
                 pass
-        return {"evergreen_chars": len(evergreen), "daily_files": len(daily_files), "daily_entries": total_entries}
+        return {
+            "evergreen_chars": len(evergreen),
+            "daily_files": len(daily_files),
+            "daily_entries": total_entries,
+            "total_entries": total_entries,
+            "auto_expired": self.auto_expired,
+            "explicit_forgotten": self.explicit_forgotten,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -592,9 +712,9 @@ class MemoryStore:
 memory_store = MemoryStore(WORKSPACE_DIR)
 
 
-def tool_memory_write(content: str, category: str = "general") -> str:
+def tool_memory_write(content: str, category: str = "general", ttl_hours: float | None = None) -> str:
     print_tool("memory_write", f"[{category}] {content[:60]}...")
-    return memory_store.write_memory(content, category)
+    return memory_store.write_memory(content, category, ttl_hours=ttl_hours)
 
 
 def tool_memory_search(query: str, top_k: int = 5) -> str:
@@ -603,6 +723,21 @@ def tool_memory_search(query: str, top_k: int = 5) -> str:
     if not results:
         return "No relevant memories found."
     return "\n".join(f"[{r['path']}] (score: {r['score']}) {r['snippet']}" for r in results)
+
+
+def tool_memory_forget(category: str | None = None, date: str | None = None) -> str:
+    args = []
+    if category:
+        args.append(f"category={category}")
+    if date:
+        args.append(f"date={date}")
+    print_tool("memory_forget", ", ".join(args) if args else "(no filter)")
+    n = memory_store.forget(category=category, date=date)
+    if n == 0:
+        return "No matching memories to forget."
+    if date:
+        return f"Forgot {n} entries from {date}"
+    return f"Forgot {n} entries (category={category})"
 
 
 # ---------------------------------------------------------------------------
@@ -622,13 +757,16 @@ TOOLS = [
         "name": "memory_write",
         "description": (
             "Save an important fact or observation to long-term memory. "
-            "Use when you learn something worth remembering about the user or context."
+            "Use when you learn something worth remembering about the user or context. "
+            "Pass ttl_hours to write a temporary memory (e.g. a one-time reminder) "
+            "that auto-expires and is lazily skipped after that many hours."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "content": {"type": "string", "description": "The fact or observation to remember."},
-                "category": {"type": "string", "description": "Category: preference, fact, context, etc."},
+                "category": {"type": "string", "description": "Category: preference, fact, context, reminder, etc."},
+                "ttl_hours": {"type": "number", "description": "Optional TTL in hours. If set, the memory expires after this many hours and is skipped on recall."},
             },
             "required": ["content"],
         },
@@ -645,11 +783,28 @@ TOOLS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "memory_forget",
+        "description": (
+            "Explicitly forget (remove) memories from the daily log. "
+            "Pass date (YYYY-MM-DD) to drop a whole day's file, or category to remove matching "
+            "entries across all days. Never touches the long-term MEMORY.md file."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Category to forget across all daily files (e.g. 'reminder')."},
+                "date": {"type": "string", "description": "Date (YYYY-MM-DD) whose daily file to forget entirely."},
+            },
+            "required": [],
+        },
+    },
 ]
 
 TOOL_HANDLERS: dict[str, Any] = {
     "memory_write": tool_memory_write,
     "memory_search": tool_memory_search,
+    "memory_forget": tool_memory_forget,
 }
 
 
@@ -785,6 +940,8 @@ def handle_repl_command(
         print(f"  长期记忆 (MEMORY.md): {stats['evergreen_chars']} 字符")
         print(f"  每日文件: {stats['daily_files']}")
         print(f"  每日条目: {stats['daily_entries']}")
+        print(f"  自动过期移除: {stats['auto_expired']}")
+        print(f"  显式遗忘移除: {stats['explicit_forgotten']}")
         return True
 
     if command == "/search":
@@ -800,6 +957,22 @@ def handle_repl_command(
                 color = GREEN if r["score"] > 0.3 else DIM
                 print(f"  {color}[{r['score']:.4f}]{RESET} {r['path']}")
                 print(f"    {r['snippet']}")
+        return True
+
+    if command == "/forget":
+        # 交互式硬遗忘, 便于无 API key 时验证行为.
+        # 用法: /forget date=2026-07-01  或  /forget category=reminder
+        if not arg:
+            print(f"{YELLOW}用法: /forget date=YYYY-MM-DD | /forget category=<cat>{RESET}")
+            return True
+        kwargs: dict[str, str] = {}
+        for part in arg.split():
+            if "=" in part:
+                k, v = part.split("=", 1)
+                kwargs[k.strip()] = v.strip()
+        n = memory_store.forget(category=kwargs.get("category"), date=kwargs.get("date"))
+        print_section(f"显式遗忘: {arg}")
+        print(f"  移除 {n} 条记忆 (evergreen 未触及)")
         return True
 
     if command == "/prompt":
@@ -857,7 +1030,7 @@ def agent_loop() -> None:
     print_info(f"  已发现技能: {len(skills_mgr.skills)}")
     stats = memory_store.get_stats()
     print_info(f"  记忆: 长期 {stats['evergreen_chars']}字符, {stats['daily_files']} 个每日文件")
-    print_info("  命令: /soul /skills /memory /search /prompt /bootstrap")
+    print_info("  命令: /soul /skills /memory /search /forget /prompt /bootstrap")
     print_info("  输入 'quit' 或 'exit' 退出.")
     print_info("=" * 60)
     print()
