@@ -866,22 +866,24 @@ def agent_loop() -> None:
             print_channel(f"\n  [{m.channel}] {m.sender_id}: {m.text[:80]}")
             run_agent_turn(m, conversations, mgr)
 
-        # CLI入力 (Telegramがアクティブな場合はノンブロッキング)
-        if tg_channel:
-            import select
-            if not select.select([sys.stdin], [], [], 0.5)[0]:
-                continue
-            try:
-                user_input = sys.stdin.readline().strip()
-            except (KeyboardInterrupt, EOFError):
-                break
-            if not user_input:
-                continue
-        else:
-            msg = cli.receive()
-            if msg is None:
-                break
-            user_input = msg.text
+        # CLI入力: 常にstdinをノンブロッキングでポーリングし、飛書/Telegramの
+        # 受信メッセージをリアルタイムに排出する。ユーザがCLIで入力しなくても
+        # 次のループ反復が回るように。入力がなければ先頭に戻ってキューを排出;
+        # EOF (Ctrl-D / パイプ入力終端) なら終了。
+        import select
+        if not select.select([sys.stdin], [], [], 0.5)[0]:
+            continue
+        try:
+            sys.stdout.write(f"{CYAN}{BOLD}You > {RESET}")
+            sys.stdout.flush()
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if line == "":          # EOF
+            break
+        user_input = line.strip()
+        if not user_input:
+            continue
 
         if user_input.lower() in ("quit", "exit"):
             break
