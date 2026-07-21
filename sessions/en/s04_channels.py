@@ -881,22 +881,24 @@ def agent_loop() -> None:
             print_channel(f"\n  [{m.channel}] {m.sender_id}: {m.text[:80]}")
             run_agent_turn(m, conversations, mgr)
 
-        # CLI input (non-blocking when Telegram is active)
-        if tg_channel:
-            import select
-            if not select.select([sys.stdin], [], [], 0.5)[0]:
-                continue
-            try:
-                user_input = sys.stdin.readline().strip()
-            except (KeyboardInterrupt, EOFError):
-                break
-            if not user_input:
-                continue
-        else:
-            msg = cli.receive()
-            if msg is None:
-                break
-            user_input = msg.text
+        # CLI input: always poll stdin non-blockingly so inbound Feishu/Telegram
+        # messages are drained in real time, without needing the user to type at
+        # the CLI to trigger the next loop iteration. No input -> back to drain;
+        # EOF (Ctrl-D / piped input end) -> exit.
+        import select
+        if not select.select([sys.stdin], [], [], 0.5)[0]:
+            continue
+        try:
+            sys.stdout.write(f"{CYAN}{BOLD}You > {RESET}")
+            sys.stdout.flush()
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if line == "":          # EOF
+            break
+        user_input = line.strip()
+        if not user_input:
+            continue
 
         if user_input.lower() in ("quit", "exit"):
             break

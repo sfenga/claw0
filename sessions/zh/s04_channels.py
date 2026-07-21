@@ -864,22 +864,23 @@ def agent_loop() -> None:
             print_channel(f"\n  [{m.channel}] {m.sender_id}: {m.text[:80]}")
             run_agent_turn(m, conversations, mgr)
 
-        # CLI 输入 (当 Telegram 活跃时使用非阻塞模式)
-        if tg_channel:
-            import select
-            if not select.select([sys.stdin], [], [], 0.5)[0]:
-                continue
-            try:
-                user_input = sys.stdin.readline().strip()
-            except (KeyboardInterrupt, EOFError):
-                break
-            if not user_input:
-                continue
-        else:
-            msg = cli.receive()
-            if msg is None:
-                break
-            user_input = msg.text
+        # CLI 输入: 始终非阻塞轮询 stdin, 这样飞书/Telegram 入站消息能被实时排空,
+        # 而不必等用户在 CLI 敲字才触发下一轮循环. 无输入时回到顶部排空队列;
+        # 读到 EOF (Ctrl-D / 管道输入结束) 则退出.
+        import select
+        if not select.select([sys.stdin], [], [], 0.5)[0]:
+            continue
+        try:
+            sys.stdout.write(f"{CYAN}{BOLD}You > {RESET}")
+            sys.stdout.flush()
+            line = sys.stdin.readline()
+        except (KeyboardInterrupt, EOFError):
+            break
+        if line == "":          # EOF
+            break
+        user_input = line.strip()
+        if not user_input:
+            continue
 
         if user_input.lower() in ("quit", "exit"):
             break
