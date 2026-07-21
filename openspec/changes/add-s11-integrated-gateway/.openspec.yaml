@@ -1,0 +1,3 @@
+schema: spec-driven
+created: 2026-07-21
+goal: 新增 s11 作为 claw0 的集大成章节,把全部 10 层(工具循环/会话/多通道/网关路由/智能记忆/心跳/cron/可靠投递/韧性/并发车道)集成进一个自包含可运行文件;capability=integrated-gateway,首次建立主 spec
