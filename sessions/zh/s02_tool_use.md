@@ -128,7 +128,7 @@ python zh/s02_tool_use.py
 # You > 当前目录下有哪些文件?
 
 # 让它读取文件
-# You > 读取 en/s01_agent_loop.py 的内容
+# You > 读取 zh/s01_agent_loop.py 的内容
 
 # 让它创建和编辑文件
 # You > 创建一个名为 hello.txt 的文件, 内容是 "Hello World"
