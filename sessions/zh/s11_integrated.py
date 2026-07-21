@@ -205,10 +205,7 @@ class ChannelAccount:
 
 class Channel:
     name: str = "unknown"
-
-    @property
-    def account_id(self) -> str:  # pragma: no cover (abstract-ish)
-        return ""
+    account_id: str = ""
 
     def receive(self) -> InboundMessage | None: ...
     def send(self, to: str, text: str, **kwargs: Any) -> bool: ...
