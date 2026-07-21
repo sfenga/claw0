@@ -598,10 +598,15 @@ class FeishuChannel(Channel):
         token = self._refresh_token()
         if not token:
             return False
+        # receive_id_type 必须与 receive_id 的实际类型匹配:
+        #   ou_ 开头 = 用户 open_id (私聊 p2p)  -> open_id
+        #   oc_ 开头 = 群 chat_id              -> chat_id
+        # 写错会报 "invalid receive_id".
+        rid_type = "open_id" if to.startswith("ou_") else "chat_id"
         try:
             resp = self._http.post(
                 f"{self.api_base}/im/v1/messages",
-                params={"receive_id_type": "chat_id"},
+                params={"receive_id_type": rid_type},
                 headers={"Authorization": f"Bearer {token}"},
                 json={"receive_id": to, "msg_type": "text",
                       "content": json.dumps({"text": text})},
